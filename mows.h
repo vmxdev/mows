@@ -17,6 +17,8 @@ typedef struct mows mows;
 typedef struct mows_request mows_request;
 typedef struct mows_response mows_response;
 
+typedef void (*mows_page_cb) (mows *m, mows_request *r, int s);
+
 /* params */
 mows_params *mows_params_new(void);
 void mows_params_free(mows_params *p);
