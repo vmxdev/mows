@@ -331,6 +331,7 @@ mows_params_set(mows_params *p, MOWS_PARAM param, uint64_t val)
 	}
 }
 
+/* try to send all buffer using multiple `send()` if needed */
 int
 mows_send_all(int sock, char *buffer, size_t len)
 {
@@ -409,7 +410,7 @@ mows_send_file(mows *h, mows_request *req, int s)
 		return;
 	}
 
-	f = fopen(rpath, "rb");
+	f = fopen(rpath, "r+b");
 	if (!f) {
 		snprintf(err, sizeof(err), _("Can't open file: '%s'"), rpath);
 		mows_send_notfound(req, err, s);
@@ -476,14 +477,13 @@ mows_accept_request(void *arg)
 		if (req.parse_complete) {
 			size_t i;
 			int pfound = 0;
-			mows_page_cb cb = NULL;
 
 			for (i=0; i<m->npages; i++) {
 				/* search for URL in registered dynamic pages */
 				if (strcmp(req.url, m->pages[i].url_or_re)
 					== 0) {
 
-					cb(m, &req, s);
+					m->pages[i].cb(m, &req, s);
 					pfound = 1;
 					break;
 				}
@@ -501,12 +501,50 @@ mows_accept_request(void *arg)
 }
 
 int
-mows_start(mows *m)
+mows_start(mows *m, const char *addr, const int port)
 {
 	struct sockaddr_in remote_addr;
 	int client_sock;
 	pthread_t newthread;
+	struct sockaddr_in name;
 	socklen_t remote_addr_len = sizeof(remote_addr);
+	in_addr_t saddr;
+	int one = 1;
+	int ret = 0;
+
+	/* init socket */
+	m->s = socket(AF_INET, SOCK_STREAM, 0);
+	if (m->s < 0) {
+		ret = errno;
+		goto fail_socket;
+	}
+
+	ret = setsockopt(m->s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+	if (ret != 0) {
+		ret = errno;
+		goto fail;
+	}
+
+	memset(&name, 0, sizeof(name));
+	name.sin_family = AF_INET;
+	name.sin_port = htons(port);
+	saddr = inet_addr(addr);
+	if (saddr == INADDR_NONE) {
+		ret = 1;
+		goto fail;
+	}
+
+	ret = bind(m->s, (struct sockaddr *)&name, sizeof(name));
+	if (ret != 0) {
+		ret = errno;
+		goto fail;
+	}
+
+	ret = listen(m->s, 5);
+	if (ret != 0) {
+		ret = errno;
+		goto fail;
+	}
 
 	for (;;) {
 		struct mows_thread_args *ta;
@@ -515,7 +553,8 @@ mows_start(mows *m)
 			&remote_addr_len);
 
 		if (client_sock == -1) {
-			goto fail_accept;
+			ret = errno;
+			goto fail;
 		}
 
 		ta = malloc(sizeof(struct mows_thread_args));
@@ -523,30 +562,28 @@ mows_start(mows *m)
 		ta->s = client_sock;
 		ta->r = remote_addr;
 
-		if (pthread_create(&newthread, NULL, mows_accept_request, ta)
-			!= 0) {
-
+		ret = pthread_create(&newthread, NULL, mows_accept_request,
+			ta);
+		if (ret	!= 0) {
 			free(ta);
-			goto fail_new_thread;
+			goto fail;
 		}
 
 		pthread_detach(newthread); /* XXX: ??? */
 	}
-	return 1;
 
-fail_new_thread:
-	/* XXX: close socket? */
-fail_accept:
 	return 0;
+
+fail:
+	close(m->s);
+fail_socket:
+	return ret;
 }
 
 mows *
-mows_new(mows_params *p, const char *addr, const int port)
+mows_alloc(mows_params *p)
 {
 	mows *m;
-	struct sockaddr_in name;
-	int one = 1;
-	in_addr_t saddr;
 
 	m = calloc(1, sizeof(mows));
 	if (!m) {
@@ -565,40 +602,8 @@ mows_new(mows_params *p, const char *addr, const int port)
 	m->parser_settings.on_header_value     = mows_h_value_callback;
 	m->parser_settings.on_body             = mows_h_body_callback;
 
-	m->s = socket(AF_INET, SOCK_STREAM, 0);
-	if (m->s < 0) {
-		goto fail_socket;
-	}
-
-	if (setsockopt(m->s, SOL_SOCKET, SO_REUSEADDR, &one,
-		sizeof(one)) != 0) {
-
-		goto fail_set_reuse;
-	}
-
-	memset(&name, 0, sizeof(name));
-	name.sin_family = AF_INET;
-	name.sin_port = htons(port);
-	saddr = inet_addr(addr);
-	if (saddr == INADDR_NONE) {
-		goto fail_inet_addr;
-	}
-	if (bind(m->s, (struct sockaddr *)&name, sizeof(name)) < 0) {
-		goto fail_bind;
-	}
-	if (listen(m->s, 5) < 0) {
-		goto fail_listen;
-	}
-
 	return m;
 
-fail_listen:
-fail_bind:
-fail_inet_addr:
-fail_set_reuse:
-	close(m->s);
-fail_socket:
-	free(m);
 fail_alloc:
 	return NULL;
 }
@@ -622,5 +627,27 @@ mows_set_root(mows *m, const char *dir)
 	}
 
 	return r;
+}
+
+int
+mows_add_page(mows *m, const char *p, mows_page_cb cb)
+{
+	struct mows_page_or_re *tmp;
+
+	tmp = realloc(m->pages, (m->npages + 1)
+		* sizeof(struct mows_page_or_re));
+	if (!tmp) {
+		return 0;
+	}
+
+	m->pages = tmp;
+	/* append page URL and corresponding callback */
+	m->pages[m->npages].is_page = 1;
+	strncpy(m->pages[m->npages].url_or_re, p, HTTP_MAX_URL_SIZE);
+	m->pages[m->npages].cb = cb;
+
+	m->npages += 1;;
+
+	return 1;
 }
 
