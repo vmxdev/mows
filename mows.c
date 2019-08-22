@@ -110,6 +110,103 @@ not_found:
 	return "application/misc";
 }
 
+/* some parse functions */
+static void
+mows_percent_decode(char *s)
+{
+	char d[HTTP_MAX_URL_SIZE];
+	size_t i, j, slen;
+	char s2[3];
+
+	s2[2] = '\0';
+	slen = strlen(s);
+
+	if (slen < 1) {
+		return;
+	}
+
+	for (i=0, j=0; i<slen; i++, j++) {
+		if (s[i] == '+') {
+			d[j] = ' ';
+		} else if (s[i] == '%') {
+			unsigned int prc;
+
+			memcpy(s2, s + i + 1, 2);
+			sscanf(s2, "%x", &prc);
+			d[j] = (char)prc;
+			i += 2;
+		} else {
+			d[j] = s[i];
+		}
+	}
+	d[j] = '\0';
+
+	memcpy(s, d, j + 1);
+}
+
+static void
+mows_parse_key_val(char *s, char *k, char *v)
+{
+	size_t klen, vlen;
+	char *eq = strchr(s, '=');
+
+	if (eq) {
+		klen = eq - s;
+	} else {
+		klen = strlen(s);
+	}
+
+	strncpy(k, s, klen);
+	k[klen] = '\0';
+
+	if (eq) {
+		vlen = strlen(s) - klen - 1;
+		strncpy(v, s + klen + 1, vlen);
+	} else {
+		vlen = 0;
+	}
+
+	v[vlen] = '\0';
+	mows_percent_decode(v);
+}
+
+void
+mows_parse_vars(mows_request *req, char *s)
+{
+	size_t offset = 0;
+	char key[HTTP_MAX_URL_SIZE], val[HTTP_MAX_URL_SIZE];
+	char kv[sizeof(key) + sizeof(val)];
+
+	for (;;) {
+		char *amp = strchr(s + offset, '&');
+
+		if (amp) {
+			size_t kv_len = amp - s - offset;
+
+			if (kv_len < 1) {
+				break;
+			}
+			strncpy(kv, s + offset, kv_len);
+			kv[kv_len] = '\0';
+			mows_parse_key_val(kv, key, val);
+			/*SMAP_INSERT_M_PTR_S(req, http_reqvars, key, val);*/
+			offset += kv_len + 1;
+		} else {
+			if (offset < strlen(s)) {
+				size_t kv_len = strlen(s) - offset;
+
+				if (kv_len < 1) {
+					break;
+				}
+
+				mows_parse_key_val(s + offset, key, val);
+				/*SMAP_INSERT_M_PTR_S(req, http_reqvars, key, val);*/
+				break;
+			}
+		}
+	}
+}
+
 /* callbacks */
 static int
 mows_url_callback(http_parser *hp, const char *at, size_t length)
@@ -120,6 +217,80 @@ mows_url_callback(http_parser *hp, const char *at, size_t length)
 
 	strncpy(r->url, at, length);
 	r->url[length] = '\0';
+
+	return 0;
+}
+
+static int
+mows_h_field_callback(http_parser *hp, const char *at, size_t length)
+{
+	char cookie[] = "Cookie";
+	mows_request *r = hp->data;
+
+	if (length != strlen(cookie)) {
+		return 0;
+	}
+
+	if (strncmp(at, cookie, length) != 0) {
+		return 0;
+	}
+
+	r->cookie_parse_state = 1;
+
+	return 0;
+}
+
+static int
+mows_h_value_callback(http_parser *hp, const char *at, size_t length)
+{
+	mows_request *r = hp->data;
+
+	if (!r->cookie_parse_state) {
+		return 0;
+	}
+
+	strncpy(r->cookie, at, length);
+	r->cookie[length] = '\0';
+	r->cookie_parse_state = 0;
+
+	return 0;
+}
+
+static int
+mows_done_callback(http_parser *hp)
+{
+	mows_request *r = hp->data;
+	struct http_parser_url u;
+	int result;
+
+	r->parse_complete = 1;
+	r->method = hp->method;
+	result = http_parser_parse_url(r->url, strlen(r->url), 0, &u);
+	if ((u.field_set & (1 << UF_QUERY)) != 0) {
+		char   v[HTTP_MAX_URL_SIZE];
+
+		strncpy(v, r->url + u.field_data[UF_QUERY].off,
+			u.field_data[UF_QUERY].len);
+
+		v[u.field_data[UF_QUERY].len] = '\0';
+		mows_parse_vars(r, v);
+		r->url[u.field_data[UF_QUERY].off - 1] = '\0';
+	}
+
+	return 0;
+}
+
+static int
+mows_h_body_callback(http_parser *hp, const char *at, size_t length)
+{
+	mows_request *r = hp->data;
+	char post_vars[HTTP_MAX_URL_SIZE];
+
+	if (hp->method != HTTP_POST) return 0;
+	if (length > sizeof(post_vars)) return 0;
+	strncpy(post_vars, at, length);
+	post_vars[length] = '\0';
+	mows_parse_vars(r, post_vars);
 
 	return 0;
 }
@@ -160,8 +331,8 @@ mows_params_set(mows_params *p, MOWS_PARAM param, uint64_t val)
 	}
 }
 
-static int
-mows_send_all(int sock, char *buffer, int len)
+int
+mows_send_all(int sock, char *buffer, size_t len)
 {
 	ssize_t nsent;
 
@@ -184,8 +355,13 @@ mows_send_notfound(mows_request *req, const char *d, int s)
 	char errtxt[1024*4], errbuf[1024*4];
 	(void)req;
 
-	snprintf(errtxt, sizeof(errtxt),
-		_("%s<hr>Error: <b>%s</b>"), d, strerror(errno));
+	if (errno) {
+		snprintf(errtxt, sizeof(errtxt),
+			_("%s<hr>Error: <b>%s</b>"), d, strerror(errno));
+	} else {
+		/* no error */
+		snprintf(errtxt, sizeof(errtxt), _("%s<hr>"), d);
+	}
 
 	snprintf(errbuf, sizeof(errbuf),
 		"HTTP/1.1 404 Not found\r\n"
@@ -208,6 +384,13 @@ mows_send_file(mows *h, mows_request *req, int s)
 
 	root_len = strlen(h->root);
 	url_len  = strlen(req->url);
+
+	if (root_len == 0) {
+		snprintf(err, sizeof(err), _("Root is not set "
+			"and URL '%s' requested"), req->url);
+		mows_send_notfound(req, err, s);
+		return;
+	}
 
 	strncpy(fullpath, h->root, root_len);
 	fullpath[root_len] = '\0';
@@ -292,16 +475,21 @@ mows_accept_request(void *arg)
 
 		if (req.parse_complete) {
 			size_t i;
+			int pfound = 0;
 			mows_page_cb cb = NULL;
 
 			for (i=0; i<m->npages; i++) {
+				/* search for URL in registered dynamic pages */
 				if (strcmp(req.url, m->pages[i].url_or_re)
 					== 0) {
 
 					cb(m, &req, s);
-				} else {
-					mows_send_file(m, &req, s);
+					pfound = 1;
+					break;
 				}
+			}
+			if (!pfound) {
+				mows_send_file(m, &req, s);
 			}
 
 			req.cookie[0] = '\0';
@@ -312,7 +500,7 @@ mows_accept_request(void *arg)
 	return NULL;
 }
 
-static int
+int
 mows_start(mows *m)
 {
 	struct sockaddr_in remote_addr;
@@ -342,7 +530,7 @@ mows_start(mows *m)
 			goto fail_new_thread;
 		}
 
-		pthread_detach(newthread);
+		pthread_detach(newthread); /* XXX: ??? */
 	}
 	return 1;
 
@@ -371,13 +559,11 @@ mows_new(mows_params *p, const char *addr, const int port)
 		mows_params_def(&m->params);
 	}
 
-	m->parser_settings.on_url = mows_url_callback;
-/*
-	h->parser_settings.on_message_complete = httpd_done_callback;
-	h->parser_settings.on_header_field     = httpd_h_field_callback;
-	h->parser_settings.on_header_value     = httpd_h_value_callback;
-	h->parser_settings.on_body             = httpd_h_body_callback;
-*/
+	m->parser_settings.on_url              = mows_url_callback;
+	m->parser_settings.on_message_complete = mows_done_callback;
+	m->parser_settings.on_header_field     = mows_h_field_callback;
+	m->parser_settings.on_header_value     = mows_h_value_callback;
+	m->parser_settings.on_body             = mows_h_body_callback;
 
 	m->s = socket(AF_INET, SOCK_STREAM, 0);
 	if (m->s < 0) {
@@ -403,13 +589,9 @@ mows_new(mows_params *p, const char *addr, const int port)
 	if (listen(m->s, 5) < 0) {
 		goto fail_listen;
 	}
-	if (!mows_start(m)) {
-		goto fail_start;
-	}
 
 	return m;
 
-fail_start:
 fail_listen:
 fail_bind:
 fail_inet_addr:
@@ -428,5 +610,17 @@ mows_free(mows *m)
 	close(m->s);
 
 	free(m);
+}
+
+int
+mows_set_root(mows *m, const char *dir)
+{
+	int r = 0;
+
+	if (realpath(dir, m->root) == NULL) {
+		r = errno;
+	}
+
+	return r;
 }
 

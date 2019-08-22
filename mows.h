@@ -27,7 +27,12 @@ void mows_params_set(mows_params *p, MOWS_PARAM param, uint64_t val);
 
 /* server */
 mows *mows_new(mows_params *p, const char *addr, const int port);
+int mows_start(mows *m);
+
 void  mows_free(mows *m);
+
+int mows_send_all(int sock, char *buffer, size_t len);
+int mows_set_root(mows *m, const char *dir);
 
 #ifdef __cplusplus
 }
