@@ -1,2 +1,2 @@
 # mows
-Simple and insecure embedded HTTP server
+Simple, inefficient and insecure embedded HTTP server
