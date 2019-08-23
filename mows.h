@@ -33,8 +33,13 @@ void  mows_free(mows *m);
 
 int mows_set_root(mows *m, const char *dir);
 int mows_add_page(mows *m, const char *p, mows_page_cb cb);
+int mows_add_re(mows *m, const char *re, mows_page_cb cb, char *err,
+	size_t esize);
 
 int mows_send_all(int sock, char *buffer, size_t len);
+
+/* request */
+const char *mows_req_url(mows_request *r);
 
 #ifdef __cplusplus
 }

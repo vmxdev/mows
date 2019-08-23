@@ -1,3 +1,21 @@
+/*
+ * mows
+ *
+ * Copyright (c) 2019, Vladimir Misyurov
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+ * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+ * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ * PERFORMANCE OF THIS SOFTWARE.
+ */
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -10,6 +28,7 @@
 #include <pthread.h>
 #include <limits.h>
 #include <errno.h>
+#include <regex.h>
 
 #include "http_parser.h"
 
@@ -31,7 +50,8 @@ struct mows_page_or_re
 {
 	int is_page;
 
-	char url_or_re[HTTP_MAX_URL_SIZE];
+	char url[HTTP_MAX_URL_SIZE];
+	regex_t re;
 	mows_page_cb cb;
 };
 
@@ -479,16 +499,30 @@ mows_accept_request(void *arg)
 			int pfound = 0;
 
 			for (i=0; i<m->npages; i++) {
-				/* search for URL in registered dynamic pages */
-				if (strcmp(req.url, m->pages[i].url_or_re)
-					== 0) {
+				/* search for URL (or regex) in registered
+				dynamic pages */
+				if (m->pages[i].is_page) {
+					/* direct URL */
+					if (strcmp(req.url, m->pages[i].url)
+						== 0) {
 
-					m->pages[i].cb(m, &req, s);
-					pfound = 1;
-					break;
+						m->pages[i].cb(m, &req, s);
+						pfound = 1;
+						break;
+					}
+				} else {
+					/* regex */
+					if (regexec(&m->pages[i].re, req.url,
+						0, NULL, 0) == 0) {
+
+						m->pages[i].cb(m, &req, s);
+						pfound = 1;
+						break;
+					}
 				}
 			}
 			if (!pfound) {
+				/* no matches in dynamic pages */
 				mows_send_file(m, &req, s);
 			}
 
@@ -643,11 +677,49 @@ mows_add_page(mows *m, const char *p, mows_page_cb cb)
 	m->pages = tmp;
 	/* append page URL and corresponding callback */
 	m->pages[m->npages].is_page = 1;
-	strncpy(m->pages[m->npages].url_or_re, p, HTTP_MAX_URL_SIZE);
+	strncpy(m->pages[m->npages].url, p, HTTP_MAX_URL_SIZE);
 	m->pages[m->npages].cb = cb;
 
 	m->npages += 1;;
 
 	return 1;
+}
+
+int
+mows_add_re(mows *m, const char *re, mows_page_cb cb, char *err, size_t esize)
+{
+	struct mows_page_or_re *tmp;
+	int res;
+	regex_t r;
+
+	res = regcomp(&r, re, REG_EXTENDED | REG_ICASE | REG_NOSUB);
+	if (res != 0) {
+		regerror(res, &r, err, esize);
+		return 0;
+	}
+
+	tmp = realloc(m->pages, (m->npages + 1)
+		* sizeof(struct mows_page_or_re));
+	if (!tmp) {
+		snprintf(err, esize, "Insufficient memory");
+		return 0;
+	}
+
+	m->pages = tmp;
+	/* append regex and corresponding callback */
+	m->pages[m->npages].is_page = 0;
+	m->pages[m->npages].re = r;
+	m->pages[m->npages].cb = cb;
+
+	m->npages += 1;;
+
+	return 1;
+}
+
+/* request */
+const char *
+mows_req_url(mows_request *r)
+{
+	return r->url;
 }
 
