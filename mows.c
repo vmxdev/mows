@@ -62,6 +62,10 @@ struct mows
 
 	int s;
 
+	int bg;             /* run in background */
+	int stop;           /* stop request */
+	pthread_t bgthread; /* background thread id */
+
 	http_parser_settings parser_settings;
 
 	size_t npages;
@@ -534,14 +538,54 @@ mows_accept_request(void *arg)
 	return NULL;
 }
 
-int
-mows_start(mows *m, const char *addr, const int port)
+static void *
+mows_work_loop(void *arg)
 {
-	struct sockaddr_in remote_addr;
+	pthread_t connthread;
 	int client_sock;
-	pthread_t newthread;
-	struct sockaddr_in name;
+	struct sockaddr_in remote_addr;
 	socklen_t remote_addr_len = sizeof(remote_addr);
+
+	mows *m = (mows *)arg;
+
+	for (;;) {
+		struct mows_thread_args *ta;
+		int rc;
+
+		client_sock = accept(m->s, (struct sockaddr *)&remote_addr,
+			&remote_addr_len);
+
+		if (m->stop) {
+			/* server stop requested */
+			break;
+		}
+
+		if (client_sock == -1) {
+			break;
+		}
+
+		ta = malloc(sizeof(struct mows_thread_args));
+		ta->m = m;
+		ta->s = client_sock;
+		ta->r = remote_addr;
+
+		rc = pthread_create(&connthread, NULL, mows_accept_request,
+			ta);
+		if (rc	!= 0) {
+			free(ta);
+			continue; /* XXX: break? */
+		}
+
+		pthread_detach(connthread); /* XXX: ??? */
+	}
+
+	return NULL;
+}
+
+int
+mows_start(mows *m, const char *addr, const int port, int bg)
+{
+	struct sockaddr_in name;
 	in_addr_t saddr;
 	int one = 1;
 	int ret = 0;
@@ -580,30 +624,16 @@ mows_start(mows *m, const char *addr, const int port)
 		goto fail;
 	}
 
-	for (;;) {
-		struct mows_thread_args *ta;
-
-		client_sock = accept(m->s, (struct sockaddr *)&remote_addr,
-			&remote_addr_len);
-
-		if (client_sock == -1) {
-			ret = errno;
+	m->stop = 0;
+	m->bg = bg;
+	if (m->bg) {
+		/* run in background */
+		ret = pthread_create(&m->bgthread, NULL, mows_work_loop, m);
+		if (ret != 0) {
 			goto fail;
 		}
-
-		ta = malloc(sizeof(struct mows_thread_args));
-		ta->m = m;
-		ta->s = client_sock;
-		ta->r = remote_addr;
-
-		ret = pthread_create(&newthread, NULL, mows_accept_request,
-			ta);
-		if (ret	!= 0) {
-			free(ta);
-			goto fail;
-		}
-
-		pthread_detach(newthread); /* XXX: ??? */
+	} else {
+		mows_work_loop(m);
 	}
 
 	return 0;
@@ -612,6 +642,20 @@ fail:
 	close(m->s);
 fail_socket:
 	return ret;
+}
+
+void
+mows_stop(mows *m)
+{
+	m->stop = 1;
+
+	shutdown(m->s, 2);
+	close(m->s);
+
+	if (m->bg) {
+		/* wait for background thread */
+		pthread_join(m->bgthread, NULL);
+	}
 }
 
 mows *
@@ -645,9 +689,16 @@ fail_alloc:
 void
 mows_free(mows *m)
 {
-	shutdown(m->s, 2);
-	close(m->s);
+	size_t i;
 
+	/* free regexps */
+	for (i=0; i<m->npages; i++) {
+		if (!m->pages[i].is_page) {
+			regfree(&m->pages[i].re);
+		}
+	}
+
+	free(m->pages);
 	free(m);
 }
 

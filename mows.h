@@ -27,9 +27,11 @@ void mows_params_set(mows_params *p, MOWS_PARAM param, uint64_t val);
 
 /* server */
 mows *mows_alloc(mows_params *p);
-int   mows_start(mows *m, const char *addr, const int port);
-
 void  mows_free(mows *m);
+
+int  mows_start(mows *m, const char *addr, const int port, int bg);
+void mows_stop(mows *m);
+
 
 int mows_set_root(mows *m, const char *dir);
 int mows_add_page(mows *m, const char *p, mows_page_cb cb);
