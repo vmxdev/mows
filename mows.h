@@ -39,6 +39,7 @@ int mows_add_re(mows *m, const char *re, mows_page_cb cb, char *err,
 	size_t esize);
 
 int mows_send_all(int sock, char *buffer, size_t len);
+void mows_redirect302(const char *to, int s);
 
 /* request */
 const char *mows_req_url(mows_request *r);

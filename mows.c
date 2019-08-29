@@ -767,6 +767,20 @@ mows_add_re(mows *m, const char *re, mows_page_cb cb, char *err, size_t esize)
 	return 1;
 }
 
+void
+mows_redirect302(const char *to, int s)
+{
+	char buf[HTTP_MAX_HEADER_SIZE];
+
+	snprintf(buf, sizeof(buf),
+		"HTTP/1.1 302 Found\r\n"
+		"Content-Length: 0\r\n"
+		"Connection: close\r\n"
+		"Location: %s\r\n\r\n",
+		to);
+	mows_send_all(s, buf, strlen(buf));
+}
+
 /* request */
 const char *
 mows_req_url(mows_request *r)

@@ -1,12 +1,13 @@
 AC_INIT([mows], [0.0.1], [vm@xenoeye.com])
-AM_INIT_AUTOMAKE([1.11 check-news foreign silent-rules subdir-objects -Wall])
+AC_CONFIG_MACRO_DIR([m4])
+AM_INIT_AUTOMAKE([check-news foreign silent-rules subdir-objects -Wall])
+
 AM_MAINTAINER_MODE
 
 AM_PROG_AR
 AC_PROG_CC
 AM_PROG_CC_C_O
 AC_CONFIG_HEADERS([config.h])
-
 LT_INIT
 
 AC_MSG_CHECKING(whether compiler understands -Wall -Wextra -pedantic)
