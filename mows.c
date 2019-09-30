@@ -611,6 +611,7 @@ mows_start(mows *m, const char *addr, const int port, int bg)
 		ret = 1;
 		goto fail;
 	}
+	name.sin_addr.s_addr = saddr;
 
 	ret = bind(m->s, (struct sockaddr *)&name, sizeof(name));
 	if (ret != 0) {
