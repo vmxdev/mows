@@ -72,6 +72,12 @@ struct mows
 	struct mows_page_or_re *pages;
 };
 
+struct mows_var
+{
+	char *name;
+	char *val;
+};
+
 struct mows_request
 {
 	char url[HTTP_MAX_URL_SIZE];
@@ -83,7 +89,11 @@ struct mows_request
 
 	unsigned char method;
 
-	int  parse_complete;
+	int parse_complete;
+
+	/* request variables (GET or POST) */
+	size_t nvars;
+	struct mows_var *vars;
 };
 
 struct mows_thread_args
@@ -194,7 +204,49 @@ mows_parse_key_val(char *s, char *k, char *v)
 	mows_percent_decode(v);
 }
 
-void
+static int
+mows_add_var(mows_request *req, const char *name, const char *val)
+{
+	struct mows_var *tmp_ptr;
+	struct mows_var v;
+
+	if (!(v.name = strdup(name))) {
+		return 0;
+	}
+	if (!(v.val = strdup(val))) {
+		free(v.name);
+		return 0;
+	}
+
+	tmp_ptr = realloc(req->vars, (req->nvars + 1) * sizeof(struct mows_var));
+	if (!tmp_ptr) {
+		return 0;
+	}
+	req->vars = tmp_ptr;
+
+	req->vars[req->nvars] = v;
+	req->nvars++;
+
+	return 1;
+}
+
+static void
+mows_free_vars(mows_request *req)
+{
+	size_t i;
+
+	for (i=0; i<req->nvars; i++) {
+		free(req->vars[i].name);
+		free(req->vars[i].val);
+	}
+
+	free(req->vars);
+
+	req->vars = NULL;
+	req->nvars = 0;
+}
+
+static void
 mows_parse_vars(mows_request *req, char *s)
 {
 	size_t offset = 0;
@@ -213,7 +265,7 @@ mows_parse_vars(mows_request *req, char *s)
 			strncpy(kv, s + offset, kv_len);
 			kv[kv_len] = '\0';
 			mows_parse_key_val(kv, key, val);
-			/*SMAP_INSERT_M_PTR_S(req, http_reqvars, key, val);*/
+			mows_add_var(req, key, val);
 			offset += kv_len + 1;
 		} else {
 			if (offset < strlen(s)) {
@@ -224,9 +276,9 @@ mows_parse_vars(mows_request *req, char *s)
 				}
 
 				mows_parse_key_val(s + offset, key, val);
-				/*SMAP_INSERT_M_PTR_S(req, http_reqvars, key, val);*/
-				break;
+				mows_add_var(req, key, val);
 			}
+			break;
 		}
 	}
 }
@@ -310,8 +362,12 @@ mows_h_body_callback(http_parser *hp, const char *at, size_t length)
 	mows_request *r = hp->data;
 	char post_vars[HTTP_MAX_URL_SIZE];
 
-	if (hp->method != HTTP_POST) return 0;
-	if (length > sizeof(post_vars)) return 0;
+	if (hp->method != HTTP_POST) {
+		return 0;
+	}
+	if (length > sizeof(post_vars)) {
+		return 0;
+	}
 	strncpy(post_vars, at, length);
 	post_vars[length] = '\0';
 	mows_parse_vars(r, post_vars);
@@ -491,12 +547,17 @@ mows_accept_request(void *arg)
 	for (;;) {
 		ssize_t recved, nparsed;
 
+		mows_free_vars(&req);
 		recved = recv(s, buf, HTTP_MAX_HEADER_SIZE, 0);
-		if (recved <= 0) break;
+		if (recved <= 0) {
+			break;
+		}
 
 		nparsed = http_parser_execute(parser, &m->parser_settings,
 			buf, recved);
-		if (nparsed != recved) break;
+		if (nparsed != recved) {
+			break;
+		}
 
 		if (req.parse_complete) {
 			size_t i;
@@ -533,6 +594,7 @@ mows_accept_request(void *arg)
 			req.cookie[0] = '\0';
 		}
 	}
+	mows_free_vars(&req);
 	free(parser);
 
 	return NULL;
@@ -787,5 +849,23 @@ const char *
 mows_req_url(mows_request *r)
 {
 	return r->url;
+}
+
+size_t
+mows_req_nvars(mows_request *r)
+{
+	return r->nvars;
+}
+
+const char *
+mows_req_var_name(mows_request *r, size_t i)
+{
+	return r->vars[i].name;
+}
+
+const char *
+mows_req_var_val(mows_request *r, size_t i)
+{
+	return r->vars[i].val;
 }
 

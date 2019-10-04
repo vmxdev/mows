@@ -43,6 +43,10 @@ void mows_redirect302(const char *to, int s);
 
 /* request */
 const char *mows_req_url(mows_request *r);
+/* variables */
+size_t mows_req_nvars(mows_request *r);
+const char *mows_req_var_name(mows_request *r, size_t i);
+const char *mows_req_var_val(mows_request *r, size_t i);
 
 #ifdef __cplusplus
 }
