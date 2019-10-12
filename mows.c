@@ -596,6 +596,7 @@ mows_accept_request(void *arg)
 	}
 	mows_free_vars(&req);
 	free(parser);
+	close(s);
 
 	return NULL;
 }
