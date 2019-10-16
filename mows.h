@@ -47,6 +47,10 @@ const char *mows_req_url(mows_request *r);
 size_t mows_req_nvars(mows_request *r);
 const char *mows_req_var_name(mows_request *r, size_t i);
 const char *mows_req_var_val(mows_request *r, size_t i);
+/* headers */
+size_t mows_req_nheaders(mows_request *r);
+const char *mows_req_header_name(mows_request *r, size_t i);
+const char *mows_req_header_val(mows_request *r, size_t i);
 
 #ifdef __cplusplus
 }
