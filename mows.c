@@ -84,7 +84,7 @@ struct mows_request
 
 	struct sockaddr_in remote;
 
-	unsigned char method;
+	int method;
 
 	int parse_complete;
 
@@ -905,3 +905,8 @@ mows_req_header_val(mows_request *r, size_t i)
 	return r->headers[i].val;
 }
 
+int
+mows_req_method(mows_request *r)
+{
+	return r->method;
+}

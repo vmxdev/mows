@@ -51,6 +51,8 @@ const char *mows_req_var_val(mows_request *r, size_t i);
 size_t mows_req_nheaders(mows_request *r);
 const char *mows_req_header_name(mows_request *r, size_t i);
 const char *mows_req_header_val(mows_request *r, size_t i);
+/* method */
+int mows_req_method(mows_request *r);
 
 #ifdef __cplusplus
 }
