@@ -72,7 +72,7 @@ struct mows
 	struct mows_page_or_re *pages;
 };
 
-struct mows_var
+struct mows_keyval
 {
 	char *name;
 	char *val;
@@ -82,9 +82,6 @@ struct mows_request
 {
 	char url[HTTP_MAX_URL_SIZE];
 
-	char cookie[HTTP_MAX_COOKIE_SIZE];
-	int  cookie_parse_state;
-
 	struct sockaddr_in remote;
 
 	int method;
@@ -93,7 +90,11 @@ struct mows_request
 
 	/* request variables (GET or POST) */
 	size_t nvars;
-	struct mows_var *vars;
+	struct mows_keyval *vars;
+
+	/* HTTP headers */
+	size_t nheaders;
+	struct mows_keyval *headers;
 };
 
 struct mows_thread_args
@@ -207,8 +208,8 @@ mows_parse_key_val(char *s, char *k, char *v)
 static int
 mows_add_var(mows_request *req, const char *name, const char *val)
 {
-	struct mows_var *tmp_ptr;
-	struct mows_var v;
+	struct mows_keyval *tmp_ptr;
+	struct mows_keyval v;
 
 	if (!(v.name = strdup(name))) {
 		return 0;
@@ -218,7 +219,8 @@ mows_add_var(mows_request *req, const char *name, const char *val)
 		return 0;
 	}
 
-	tmp_ptr = realloc(req->vars, (req->nvars + 1) * sizeof(struct mows_var));
+	tmp_ptr = realloc(req->vars, (req->nvars + 1)
+		* sizeof(struct mows_keyval));
 	if (!tmp_ptr) {
 		return 0;
 	}
@@ -231,19 +233,19 @@ mows_add_var(mows_request *req, const char *name, const char *val)
 }
 
 static void
-mows_free_vars(mows_request *req)
+mows_free_kv(size_t *n, struct mows_keyval **kv)
 {
 	size_t i;
 
-	for (i=0; i<req->nvars; i++) {
-		free(req->vars[i].name);
-		free(req->vars[i].val);
+	for (i=0; i<*n; i++) {
+		free(((*kv)[i]).name);
+		free(((*kv)[i]).val);
 	}
 
-	free(req->vars);
+	free(*kv);
 
-	req->vars = NULL;
-	req->nvars = 0;
+	*kv = NULL;
+	*n = 0;
 }
 
 static void
@@ -300,18 +302,26 @@ mows_url_callback(http_parser *hp, const char *at, size_t length)
 static int
 mows_h_field_callback(http_parser *hp, const char *at, size_t length)
 {
-	char cookie[] = "Cookie";
-	mows_request *r = hp->data;
+	struct mows_keyval *tmp_ptr, v;
+	mows_request *req = hp->data;
 
-	if (length != strlen(cookie)) {
-		return 0;
+	v.val = NULL;
+	v.name = malloc(length + 1);
+	if (!v.name) {
+		return 1;
 	}
+	memcpy(v.name, at, length);
+	v.name[length] = '\0';
 
-	if (strncmp(at, cookie, length) != 0) {
-		return 0;
+	tmp_ptr = realloc(req->headers, (req->nheaders + 1)
+		* sizeof(struct mows_keyval));
+	if (!tmp_ptr) {
+		return 1;
 	}
+	req->headers = tmp_ptr;
 
-	r->cookie_parse_state = 1;
+	req->headers[req->nheaders] = v;
+	req->nheaders++;
 
 	return 0;
 }
@@ -319,15 +329,20 @@ mows_h_field_callback(http_parser *hp, const char *at, size_t length)
 static int
 mows_h_value_callback(http_parser *hp, const char *at, size_t length)
 {
-	mows_request *r = hp->data;
+	mows_request *req = hp->data;
+	struct mows_keyval *hdr;
 
-	if (!r->cookie_parse_state) {
-		return 0;
+	if (req->nheaders == 0) {
+		return 1;
 	}
 
-	strncpy(r->cookie, at, length);
-	r->cookie[length] = '\0';
-	r->cookie_parse_state = 0;
+	hdr = &req->headers[req->nheaders - 1];
+	hdr->val = malloc(length + 1);
+	if (!hdr->val) {
+		return 1;
+	}
+	memcpy(hdr->val, at, length);
+	hdr->val[length] = '\0';
 
 	return 0;
 }
@@ -547,7 +562,8 @@ mows_accept_request(void *arg)
 	for (;;) {
 		ssize_t recved, nparsed;
 
-		mows_free_vars(&req);
+		mows_free_kv(&(req.nvars), &(req.vars));
+		mows_free_kv(&(req.nheaders), &(req.headers));
 		recved = recv(s, buf, HTTP_MAX_HEADER_SIZE, 0);
 		if (recved <= 0) {
 			break;
@@ -590,11 +606,12 @@ mows_accept_request(void *arg)
 				/* no matches in dynamic pages */
 				mows_send_file(m, &req, s);
 			}
-
-			req.cookie[0] = '\0';
 		}
 	}
-	mows_free_vars(&req);
+
+	mows_free_kv(&(req.nvars), &(req.vars));
+	mows_free_kv(&(req.nheaders), &(req.headers));
+
 	free(parser);
 	close(s);
 
@@ -870,9 +887,26 @@ mows_req_var_val(mows_request *r, size_t i)
 	return r->vars[i].val;
 }
 
+size_t
+mows_req_nheaders(mows_request *r)
+{
+	return r->nheaders;
+}
+
+const char *
+mows_req_header_name(mows_request *r, size_t i)
+{
+	return r->headers[i].name;
+}
+
+const char *
+mows_req_header_val(mows_request *r, size_t i)
+{
+	return r->headers[i].val;
+}
+
 int
 mows_req_method(mows_request *r)
 {
 	return r->method;
 }
-
