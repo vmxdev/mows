@@ -474,9 +474,9 @@ mows_send_file(mows *h, mows_request *req, int s)
 	char fullpath[PATH_MAX], rpath[PATH_MAX];
 	size_t root_len, url_len;
 	FILE *f;
-	char file_str[1024*8];
+	char file_str[1024];
 	size_t flen;
-	char err[1024*4];
+	char err[1024];
 
 	root_len = strlen(h->root);
 	url_len  = strlen(req->url);

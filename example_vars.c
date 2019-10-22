@@ -14,7 +14,14 @@ http_index(mows *m, mows_request *r, int s)
 	size_t nvars, i;
 	(void)m;
 
-	snprintf(vars, sizeof(vars), "<h1>VARS:</h1><br />");
+	snprintf(vars, sizeof(vars), "<h4>Variables example</h4>"
+		"<a href='?somevar=value&var2=value2'>"
+		"Click here to get page with GET variables</a>"
+		"<br /><hr />Or submit form below to view POST variables"
+		"<form method='post'>"
+		"<input type='text' name='postvar' value='...'>"
+		"<input type='submit' value='Submit'></form>"
+		"<br /><h1>VARS</h1>");
 
 	nvars = mows_req_nvars(r);
 	for (i=0; i<nvars; i++) {
