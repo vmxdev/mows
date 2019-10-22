@@ -87,7 +87,7 @@ struct mows_request
 
 	struct sockaddr_in remote;
 
-	unsigned char method;
+	int method;
 
 	int parse_complete;
 
@@ -868,5 +868,11 @@ const char *
 mows_req_var_val(mows_request *r, size_t i)
 {
 	return r->vars[i].val;
+}
+
+int
+mows_req_method(mows_request *r)
+{
+	return r->method;
 }
 
